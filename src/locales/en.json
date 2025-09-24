@@ -1,0 +1,18 @@
+{
+  "welcome": "Welcome, {{name}}",
+  "stay_safe": "Stay safe on your journey",
+  "safety_status": "Safety Status",
+  "good": "Good",
+  "safe_area": "Your current area is relatively safe",
+  "active_alerts": "Active Alerts ({{count}})",
+  "high_crime": "High Crime Area",
+  "pickpocketing": "Increased pickpocketing reported in this area",
+  "weather_alert": "Weather Alert",
+  "rainfall": "Heavy rainfall and flooding expected",
+  "critical_events": "Critical Events",
+  "flash_flood": "Flash Flood Warning",
+  "flooding": "Heavy rainfall may cause flooding in low-lying areas",
+  "quick_actions": "Quick Actions",
+  "emergency_sos": "Emergency SOS",
+  "view_risk_zones": "View Risk Zones"
+}
