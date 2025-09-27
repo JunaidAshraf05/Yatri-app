@@ -1,6 +1,10 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import "./Home.css";
+import { getCurrentPosition } from "./services/geolocation";
+import { getWeather } from "./services/weather";
+import { getNearbyCrimes } from "./services/crime";
+import { getCriticalAlerts } from "./services/alerts";
 
 function createRipple(e, ref) {
   const button = ref.current;
@@ -13,19 +17,14 @@ function createRipple(e, ref) {
   circle.style.top = `${e.nativeEvent.offsetY - radius}px`;
   circle.classList.add("ripple");
 
-  // Remove old ripple if exists
   const ripple = button.getElementsByClassName("ripple")[0];
-  if (ripple) {
-    ripple.remove();
-  }
-
+  if (ripple) ripple.remove();
   button.appendChild(circle);
 }
 
 export default function Home() {
   const { t, i18n } = useTranslation();
 
-  // Example language switcher
   const languages = [
     { code: "en", label: "English" },
     { code: "hi", label: "हिन्दी" },
@@ -41,63 +40,99 @@ export default function Home() {
     { code: "ur", label: "اردو" }
   ];
 
-  const [sosMessage, setSosMessage] = useState("");
+  const [coords, setCoords] = useState(null);
+  const [weather, setWeather] = useState(null);
+  const [crime, setCrime] = useState({ incidents: [], provider: "none" });
+  const [critical, setCritical] = useState([]);
+  const [error, setError] = useState("");
+
   const sosRef = useRef(null);
   const riskRef = useRef(null);
 
-  const handleSOS = async (e) => {
-    createRipple(e, sosRef);
-    try {
-      let coordsText = "";
-      if ("geolocation" in navigator) {
-        const pos = await new Promise((resolve, reject) =>
-          navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: true, timeout: 8000 })
-        );
-        const { latitude, longitude } = pos.coords;
-        coordsText = `Lat: ${latitude.toFixed(5)}, Lng: ${longitude.toFixed(5)}\nhttps://maps.google.com/?q=${latitude},${longitude}`;
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const pos = await getCurrentPosition();
+        if (cancelled) return;
+        setCoords(pos);
+        const [w, cr, ca] = await Promise.all([
+          getWeather(pos.lat, pos.lon),
+          getNearbyCrimes(pos.lat, pos.lon),
+          getCriticalAlerts(pos.lat, pos.lon),
+        ]);
+        if (cancelled) return;
+        setWeather(w);
+        setCrime(cr);
+        setCritical(ca);
+      } catch (e) {
+        setError(e?.message || "Failed to load location");
       }
+    };
+    load();
 
-      const message = `EMERGENCY SOS! Please help. ${coordsText}`.trim();
-      setSosMessage("SOS triggered. Opening dialer… you can share your location message if needed.");
+    const id = setInterval(load, 5 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
-      // Try share if supported
-      if (navigator.share) {
-        try { await navigator.share({ title: "Emergency SOS", text: message }); } catch (_) {}
-      }
-
-      // Open emergency number (works on mobile)
-      try { window.open('tel:112'); } catch (_) {}
-
-      // Fallback: open mail compose with message
-      if (!navigator.share) {
-        const mailto = `mailto:?subject=Emergency SOS&body=${encodeURIComponent(message)}`;
-        window.open(mailto, '_blank');
-      }
-
-      setTimeout(() => setSosMessage(""), 6000);
-    } catch (err) {
-      setSosMessage("Unable to get location. Dialing emergency number…");
-      try { window.open('tel:112'); } catch (_) {}
-      setTimeout(() => setSosMessage(""), 6000);
+  const alerts = useMemo(() => {
+    const items = [];
+    if (weather) {
+      const sev = weather.severity === "danger" ? "danger" : weather.severity === "warning" ? "warning" : "warning";
+      items.push({
+        type: sev,
+        title: "Weather Alert",
+        desc: weather.severity === "danger" ? "Heavy rainfall and flooding possible" : weather.precipitationMm >= 0.1 ? "Light rain in your area" : weather.description,
+        location: weather.locationName ? weather.locationName : "Your Area",
+      });
     }
+    if (crime?.incidents?.length) {
+      const recent = crime.incidents[0];
+      items.unshift({
+        type: "warning",
+        title: recent.offense || "Crime Alert",
+        desc: recent.description || "Recent incident reported nearby",
+        location: recent.location || "Nearby",
+      });
+    }
+    return items;
+  }, [weather, crime]);
+
+  const firstCritical = useMemo(() => {
+    if (critical && critical.length) return critical[0];
+    if (weather && weather.severity === "danger") {
+      return {
+        title: "Flash Flood Warning",
+        severity: "high",
+        description: "Heavy rainfall may cause flooding in low-lying areas",
+        location: "Your Area",
+        sent: new Date().toISOString(),
+      };
+    }
+    return null;
+  }, [critical, weather]);
+
+  const timeFmt = (iso) => {
+    try { return new Date(iso).toLocaleTimeString(); } catch { return ""; }
   };
 
   return (
     <div>
-      {/* Language Switcher */}
-      <div style={{ marginBottom: 16 }}>
-        <select
-          value={i18n.language}
-          onChange={(e) => i18n.changeLanguage(e.target.value)}
-          className="lang-dropdown"
-          aria-label="Select Language"
-        >
-          {languages.map(lang => (
-            <option key={lang.code} value={lang.code}>
-              {lang.label}
-            </option>
-          ))}
-        </select>
+      <div className="lang-switch" role="tablist" aria-label="Language selector">
+        {languages.map((lang) => (
+          <button
+            key={lang.code}
+            onClick={() => i18n.changeLanguage(lang.code)}
+            className={`lang-chip${i18n.language === lang.code ? " active" : ""}`}
+            role="tab"
+            aria-selected={i18n.language === lang.code}
+          >
+            {lang.label}
+          </button>
+        ))}
       </div>
 
       <div className="welcome-card">
@@ -119,8 +154,8 @@ export default function Home() {
           <span className="status-title">{t("safety_status")}</span>
         </div>
         <div className="status-content">
-          <span className="status-good">{t("good")}</span>
-          <span>{t("safe_area")}</span>
+          <span className="status-good">{weather ? `${Math.round(weather.tempC)}°C · ${weather.main}` : t("good")}</span>
+          <span>{coords ? `${coords.lat.toFixed(2)}, ${coords.lon.toFixed(2)}` : t("safe_area")}</span>
         </div>
         <div className="status-shield">
           <svg width="48" height="48" fill="none">
@@ -133,56 +168,73 @@ export default function Home() {
       <div className="alerts-card">
         <div className="alerts-header">
           <span className="alerts-icon">⚠️</span>
-          <span className="alerts-title">Active Alerts (2)</span>
+          <span className="alerts-title">{`Active Alerts (${alerts.length})`}</span>
         </div>
-        <div className="alert alert-warning">
-          <div>
-            <span className="alert-title">High Crime Area</span>
-            <span className="alert-badge warning">warning</span>
+        {alerts.map((a, i) => (
+          <div key={i} className={`alert ${a.type === 'danger' ? 'alert-danger' : 'alert-warning'}`}>
+            <div>
+              <span className="alert-title">{a.title}</span>
+              <span className={`alert-badge ${a.type === 'danger' ? 'danger' : 'warning'}`}>{a.type === 'danger' ? 'danger' : 'warning'}</span>
+            </div>
+            <div className="alert-desc">{a.desc}</div>
+            <div className="alert-location">📍 {a.location}</div>
           </div>
-          <div className="alert-desc">Increased pickpocketing reported in this area</div>
-          <div className="alert-location">📍 Tourist District Center</div>
-        </div>
-        <div className="alert alert-danger">
-          <div>
-            <span className="alert-title">Weather Alert</span>
-            <span className="alert-badge danger">danger</span>
+        ))}
+        {alerts.length === 0 && (
+          <div className="alert alert-warning">
+            <div>
+              <span className="alert-title">No Active Alerts</span>
+              <span className="alert-badge warning">info</span>
+            </div>
+            <div className="alert-desc">All clear in your area right now</div>
+            <div className="alert-location">📍 {coords ? "Your Area" : "Waiting for location"}</div>
           </div>
-          <div className="alert-desc">Heavy rainfall and flooding expected</div>
-          <div className="alert-location">📍 Downtown Area</div>
-        </div>
+        )}
       </div>
 
-      {/* Critical Events Section */}
       <div className="critical-events-card">
         <div className="critical-header">
           <span className="critical-icon">⚠️</span>
           <span className="critical-title">Critical Events</span>
         </div>
-        <div className="critical-alert">
-          <div>
-            <span className="critical-dot"></span>
-            <span className="critical-alert-title">Flash Flood Warning</span>
-            <span className="critical-badge">high</span>
+        {firstCritical ? (
+          <div className="critical-alert">
+            <div>
+              <span className="critical-dot"></span>
+              <span className="critical-alert-title">{firstCritical.title}</span>
+              <span className="critical-badge">{firstCritical.severity || 'high'}</span>
+            </div>
+            <div className="critical-desc">{firstCritical.description}</div>
+            <div className="critical-meta">
+              <span className="critical-meta-item">📍 {firstCritical.location || 'Your Area'}</span>
+              <span className="critical-meta-item">🕒 {timeFmt(firstCritical.sent)}</span>
+            </div>
           </div>
-          <div className="critical-desc">Heavy rainfall may cause flooding in low-lying areas</div>
-          <div className="critical-meta">
-            <span className="critical-meta-item">📍 River District</span>
-            <span className="critical-meta-item">🕒 7:34:23 PM</span>
+        ) : (
+          <div className="critical-alert">
+            <div>
+              <span className="critical-dot"></span>
+              <span className="critical-alert-title">No critical events</span>
+              <span className="critical-badge">low</span>
+            </div>
+            <div className="critical-desc">We'll notify you if something urgent happens nearby</div>
+            <div className="critical-meta">
+              <span className="critical-meta-item">📍 {coords ? "Your Area" : "Locating…"}</span>
+              <span className="critical-meta-item">🕒 {timeFmt(new Date().toISOString())}</span>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
-      {/* Quick Actions Section */}
       <div className="quick-actions-card">
         <div className="quick-title">Quick Actions</div>
         <div className="quick-actions">
           <div
             className={`quick-action sos`}
             ref={sosRef}
-            onClick={handleSOS}
+            onClick={e => createRipple(e, sosRef)}
           >
-            <span style={{ fontSize: "1.5rem", marginBottom: "6px" }}>⚠️</span>
+            <span className="quick-icon">⚠️</span>
             <div className="sos-text">Emergency SOS</div>
           </div>
           <div
@@ -190,16 +242,12 @@ export default function Home() {
             ref={riskRef}
             onClick={e => createRipple(e, riskRef)}
           >
-            <span style={{ fontSize: "1.5rem", marginBottom: "6px" }}>📍</span>
+            <span className="quick-icon">📍</span>
             <div className="risk-text">View Risk Zones</div>
           </div>
         </div>
+        {error && <div className="alert alert-warning mt-12"><div className="alert-desc">{error}</div></div>}
       </div>
-      {sosMessage && (
-        <div className="maps-card" style={{ background: '#fef2f2', border: '1.5px solid #fecaca', color: '#b91c1c' }}>
-          {sosMessage}
-        </div>
-      )}
     </div>
   );
 }
